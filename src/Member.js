@@ -7,6 +7,7 @@ import Table from 'react-bootstrap/Table';
 import Form from 'react-bootstrap/Form';
 import InputGroup from 'react-bootstrap/InputGroup';
 import React, { Component } from 'react';
+import { flushSync } from 'react-dom';
 
 class Member extends Component {
 	constructor(props) {
@@ -21,7 +22,6 @@ class Member extends Component {
 					'address': ''
 				}
 			},
-			repoName: null,
 			list: null,
 			showList: []
 		}
@@ -31,7 +31,7 @@ class Member extends Component {
 		this.changeAddressState = this.changeAddressState.bind(this)
 		this.changePasswordState = this.changePasswordState.bind(this)
 		this.changePhoneState = this.changePhoneState.bind(this)
-		this.member = {};
+
 	}
 	changeAddressState(event) {
 		//使用setState將值寫到nameVal中
@@ -94,7 +94,6 @@ class Member extends Component {
 
 
 	query() {
-		debugger;
 		fetch('http://localhost:8080/angularJS/query', {
 			method: 'POST',
 			body: JSON.stringify(this.state.inputVO),
@@ -102,27 +101,36 @@ class Member extends Component {
 		})
 			.then(res => res.json())
 			.then(data => {
+				debugger;
 				/*接到request data後要做的事情*/
-				this.setState({
-					// repoName: data[0]['name'],
-					list: data.memberVO,
-					// showList: []
-				});
-				this.state.showList = [];
-				for (let i = 0; i <= this.state.list.length - 1; i++) {
-					this.state.showList.push(<tr><td>{this.state.list[i]['email']}</td><td>{this.state.list[i]['password']}</td>
-						<td>{this.state.list[i]['cellphone']}</td><td>{this.state.list[i]['address']}</td></tr>)
-				}
+					this.setState({
+						list: data.memberVO,
+						showList: []
+					}, () => {
+						console.log('setState回調參數觸發'); 
+						for (let i = 0; i <= this.state.list.length - 1; i++) {
+							this.state.showList.push(<tr><td>{this.state.list[i]['email']}</td><td>{this.state.list[i]['password']}</td>
+								<td>{this.state.list[i]['cellphone']}</td><td>{this.state.list[i]['address']}</td></tr>)
+						}
+						/*
+						初步學習 要用this.setState才能觸發畫面參數對應值改變 所以前一個setState接收後端資料
+						然後調用回傳函數處理
+						必須再調用一次setState再觸發一次畫面刷新
+						*/
+						this.setState({
+							showList : this.state.showList
+						});
+
+					});
 			})
 			.catch(e => {
-				/*發生錯誤時要做的事情*/
+				// alert('與後端資料庫連線發生錯誤，請洽管理員。');
 				console.log(e);
 			})
 	}
 
 	clear() {
 		this.setState({
-			repoName: null,
 			list: null,
 			showList: []
 		});
@@ -208,6 +216,7 @@ class Member extends Component {
 						{this.state.showList}
 					</tbody>
 				</Table>
+				{this.state.showList}
 			</Container>
 		)
 	}
