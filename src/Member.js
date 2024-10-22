@@ -101,13 +101,11 @@ class Member extends Component {
 		})
 			.then(res => res.json())
 			.then(data => {
-				debugger;
 				/*接到request data後要做的事情*/
 					this.setState({
 						list: data.memberVO,
 						showList: []
 					}, () => {
-						console.log('setState回調參數觸發'); 
 						for (let i = 0; i <= this.state.list.length - 1; i++) {
 							this.state.showList.push(<tr><td>{this.state.list[i]['email']}</td><td>{this.state.list[i]['password']}</td>
 								<td>{this.state.list[i]['cellphone']}</td><td>{this.state.list[i]['address']}</td></tr>)
@@ -216,7 +214,6 @@ class Member extends Component {
 						{this.state.showList}
 					</tbody>
 				</Table>
-				{this.state.showList}
 			</Container>
 		)
 	}
