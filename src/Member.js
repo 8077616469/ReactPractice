@@ -94,7 +94,9 @@ class Member extends Component {
 
 
 	query() {
-		fetch('http://localhost:8080/angularJS/query', {
+		//http://localhost:8080/angularJS/query
+		//http://http://35.221.172.235:8080/goway/angularJS/query
+		fetch('http://http://35.221.172.235:8080/goway/angularJS/query', {
 			method: 'POST',
 			body: JSON.stringify(this.state.inputVO),
 			headers: { 'Content-type': 'application/json; charset=UTF-8' }
