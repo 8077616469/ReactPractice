@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Users, Layers, GitBranch, Plus, Trash2, Check, ChevronRight, Trophy, RotateCcw, Shuffle, Copy } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Users, Layers, GitBranch, Plus, Trash2, Check, Trophy, RotateCcw, Shuffle, Copy } from 'lucide-react';
 
 /* ============================== 主題色彩 ============================== */
 const COLORS = {
@@ -103,10 +103,9 @@ function computeEliminationRanking(stage) {
     r.matches.forEach((m) => {
       if (m.bye || !m.winner) return;
       const loser = m.winner === m.p1.id ? m.p2 : m.p1;
-      if (loser) results.push({ player: loser, size: r.size || m.matches ? r.size : r.matches.length * 2 });
+      if (loser) results.push({ player: loser, size: r.size || (r.matches.length * 2) });
     });
   });
-  results.forEach((r) => { if (!r.size) r.size = 999; });
   const lastRound = stage.rounds[stage.rounds.length - 1];
   let champion = null;
   if (lastRound && lastRound.matches.length === 1) {
@@ -216,27 +215,33 @@ function generateRoundRobinRounds(players, doubleRound) {
   return rounds;
 }
 
-/* ---------- 通用 ---------- */
-function computeStandingsFromMatches(players, allMatches) {
+/* ---------- 通用：戰績統計（純以分數計算，輪空不計入戰績） ---------- */
+function computeStandingsFromMatches(players, allMatches, options = {}) {
+  const byeCountsAsWin = !!options.byeCountsAsWin;
   const stat = {};
-  players.forEach((p) => { stat[p.id] = { player: p, w: 0, l: 0, d: 0, pts: 0 }; });
+  players.forEach((p) => { stat[p.id] = { player: p, w: 0, l: 0, d: 0, pf: 0, pa: 0 }; });
   allMatches.forEach((m) => {
     if (m.bye) {
-      if (stat[m.p1.id]) { stat[m.p1.id].w += 1; stat[m.p1.id].pts += 1; }
+      if (byeCountsAsWin && stat[m.p1.id]) stat[m.p1.id].w += 1;
       return;
     }
-    if (!m.p2 || (!m.winner && !m.draw)) return;
+    if (!m.p2) return;
+    const hasScore = m.score1 !== null && m.score1 !== undefined && m.score2 !== null && m.score2 !== undefined;
+    if (!hasScore) return;
     if (!stat[m.p1.id] || !stat[m.p2.id]) return;
-    if (m.draw) {
+    stat[m.p1.id].pf += m.score1; stat[m.p1.id].pa += m.score2;
+    stat[m.p2.id].pf += m.score2; stat[m.p2.id].pa += m.score1;
+    if (m.score1 === m.score2) {
       stat[m.p1.id].d += 1; stat[m.p2.id].d += 1;
-      stat[m.p1.id].pts += 0.5; stat[m.p2.id].pts += 0.5;
-    } else if (m.winner === m.p1.id) {
-      stat[m.p1.id].w += 1; stat[m.p1.id].pts += 1; stat[m.p2.id].l += 1;
-    } else if (m.winner === m.p2.id) {
-      stat[m.p2.id].w += 1; stat[m.p2.id].pts += 1; stat[m.p1.id].l += 1;
+    } else if (m.score1 > m.score2) {
+      stat[m.p1.id].w += 1; stat[m.p2.id].l += 1;
+    } else {
+      stat[m.p2.id].w += 1; stat[m.p1.id].l += 1;
     }
   });
-  return Object.values(stat).sort((a, b) => b.pts - a.pts || b.w - a.w || a.player.name.localeCompare(b.player.name));
+  return Object.values(stat)
+    .map((s) => ({ ...s, diff: s.pf - s.pa }))
+    .sort((a, b) => b.w - a.w || b.diff - a.diff || b.pf - a.pf || a.player.name.localeCompare(b.player.name));
 }
 
 function getStageRanking(stage) {
@@ -244,27 +249,28 @@ function getStageRanking(stage) {
     return computeEliminationRanking(stage);
   }
   const allMatches = stage.rounds.reduce((acc, r) => acc.concat(r.matches), []);
-  const standings = computeStandingsFromMatches(stage.participants, allMatches);
-  return standings.map((s, idx) => ({ rank: idx + 1, player: s.player, w: s.w, l: s.l, d: s.d }));
+  const standings = computeStandingsFromMatches(stage.participants, allMatches, { byeCountsAsWin: stage.format === 'swiss' });
+  return standings.map((s, idx) => ({ rank: idx + 1, ...s }));
 }
 
 function formatMatchLine(m) {
-  const n1 = m.p1.nickname || m.p1.name;
-  if (m.bye) return `${n1}（輪空晉級）`;
-  const n2 = m.p2.nickname || m.p2.name;
+  const n1 = m.p1.name;
+  if (m.bye) return `${n1}（輪空，不計入戰績）`;
+  const n2 = m.p2.name;
   const hasScore = m.score1 !== null && m.score1 !== undefined && m.score2 !== null && m.score2 !== undefined;
   const s1 = hasScore ? m.score1 : '-';
   const s2 = hasScore ? m.score2 : '-';
   let suffix = '';
-  if (m.draw) suffix = '（平手）';
-  else if (!hasScore && !m.winner) suffix = '（未完成）';
+  if (hasScore && m.score1 === m.score2) suffix = '（平手）';
+  else if (!hasScore) suffix = '（未完成）';
   return `${n1} : ${n2}   ${s1}:${s2}${suffix}`;
 }
 
 function buildStageExportText(stage) {
+  const fmtName = stage.format === 'single' ? '單淘汰賽' : stage.format === 'swiss' ? '瑞士制' : '循環賽';
   const lines = [];
-  if (stage.competitionName) lines.push(`比賽名稱：${stage.competitionName}`);
-  lines.push(`階段：${stage.name}`);
+  lines.push(`賽事名稱：${stage.name}`);
+  lines.push(`賽制：${fmtName}`);
   lines.push(`匯出時間：${new Date().toLocaleString('zh-TW')}`);
   lines.push('');
   stage.rounds.forEach((round) => {
@@ -272,18 +278,16 @@ function buildStageExportText(stage) {
     round.matches.forEach((m) => lines.push(formatMatchLine(m)));
     lines.push('');
   });
-  if (stage.status === 'done') {
-    lines.push('—— 最終結果 ——');
-    if (stage.format === 'single') {
-      const champ = stage.participants.find((p) => p.id === stage.championId);
-      if (champ) lines.push(`冠軍：${champ.nickname || champ.name}`);
-    } else {
-      const ranking = getStageRanking(stage);
-      ranking.forEach((r) => {
-        const record = r.w !== undefined ? `（${r.w}勝 ${r.l}負 ${r.d}和）` : '';
-        lines.push(`${r.rank}. ${r.player.nickname || r.player.name} ${record}`);
-      });
-    }
+  lines.push(stage.status === 'done' ? '—— 最終結果 ——' : '—— 目前戰績（賽事尚未結束）——');
+  if (stage.format === 'single') {
+    const champ = stage.participants.find((p) => p.id === stage.championId);
+    lines.push(champ ? `冠軍：${champ.name}` : '（尚未產生冠軍）');
+  } else {
+    const ranking = getStageRanking(stage);
+    ranking.forEach((r) => {
+      const diffText = r.diff > 0 ? `+${r.diff}` : `${r.diff}`;
+      lines.push(`${r.rank}. ${r.player.name}　勝${r.w} 負${r.l} 和${r.d}　勝分${r.pf} 失分${r.pa} 淨分${diffText}`);
+    });
   }
   return lines.join('\n');
 }
@@ -385,43 +389,35 @@ function EmptyState({ text, hint }) {
   );
 }
 
-/* ============================== 對戰卡片 ============================== */
-function PlayerSlot({ player, isWinner, isBye, editable, onClick, showScore, score, onScoreChange }) {
+/* ============================== 對戰卡片（純分數計分，無需點選勝方） ============================== */
+function PlayerSlot({ player, isWinner, isBye, editable, score, onScoreChange }) {
   return (
-    <div
-      onClick={editable && player ? onClick : undefined}
-      style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '10px 12px',
-        background: isWinner ? 'rgba(217,166,62,0.12)' : 'transparent',
-        borderLeft: isWinner ? `3px solid ${COLORS.accent}` : '3px solid transparent',
-        cursor: editable && player ? 'pointer' : 'default',
-        opacity: isBye ? 0.4 : 1,
-      }}
-    >
-      <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+    <div style={{
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      padding: '10px 12px',
+      background: isWinner ? 'rgba(217,166,62,0.12)' : 'transparent',
+      borderLeft: isWinner ? `3px solid ${COLORS.accent}` : '3px solid transparent',
+      opacity: isBye ? 0.4 : 1,
+    }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
         <span style={{
           fontSize: 14, fontWeight: isWinner ? 600 : 500,
           color: isWinner ? COLORS.accent : COLORS.text,
-          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'block',
         }}>
-          {player ? (player.nickname || player.name) : 'BYE'}
+          {player ? player.name : 'BYE'}
         </span>
-        {player && player.nickname ? (
-          <span style={{ fontSize: 11, color: COLORS.textFaint }}>{player.name}</span>
-        ) : null}
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-        {showScore ? (
+        {isBye ? null : (
           editable ? (
             <input
               type="number"
               value={score === null || score === undefined ? '' : score}
               placeholder="-"
-              onClick={(e) => e.stopPropagation()}
               onChange={(e) => onScoreChange(e.target.value)}
               style={{
-                width: 42, padding: '4px 6px', borderRadius: 6, textAlign: 'center',
+                width: 46, padding: '4px 6px', borderRadius: 6, textAlign: 'center',
                 border: `1px solid ${COLORS.line}`, background: COLORS.panelAlt,
                 color: COLORS.text, fontSize: 13, fontFamily: FONT_MONO, outline: 'none',
               }}
@@ -431,14 +427,14 @@ function PlayerSlot({ player, isWinner, isBye, editable, onClick, showScore, sco
               {score === null || score === undefined ? '—' : score}
             </span>
           )
-        ) : null}
+        )}
         {isWinner ? <Check size={15} color={COLORS.accent} /> : null}
       </div>
     </div>
   );
 }
 
-function MatchCard({ match, editable, onSetWinner, onSetDraw, onSetScore, showDraw, fullWidth }) {
+function MatchCard({ match, editable, onSetScore, fullWidth }) {
   const p1Winner = !match.bye && match.winner === match.p1.id;
   const p2Winner = !match.bye && match.p2 && match.winner === match.p2.id;
   return (
@@ -451,38 +447,40 @@ function MatchCard({ match, editable, onSetWinner, onSetDraw, onSetScore, showDr
       flexShrink: 0,
     }}>
       <PlayerSlot player={match.p1} isWinner={match.bye || p1Winner} isBye={false}
-        editable={editable && !match.bye} onClick={() => onSetWinner(match.id, match.p1.id)}
-        showScore={!match.bye} score={match.score1} onScoreChange={(v) => onSetScore(match.id, 'score1', v)} />
+        editable={editable && !match.bye} score={match.score1} onScoreChange={(v) => onSetScore(match.id, 'score1', v)} />
       <div style={{ height: 1, background: COLORS.line }} />
       <PlayerSlot player={match.p2} isWinner={p2Winner} isBye={match.bye}
-        editable={editable && !match.bye} onClick={() => match.p2 && onSetWinner(match.id, match.p2.id)}
-        showScore={!match.bye} score={match.score2} onScoreChange={(v) => onSetScore(match.id, 'score2', v)} />
-      {showDraw && !match.bye && match.p2 && editable ? (
-        <button onClick={() => onSetDraw(match.id)} style={{
-          width: '100%', padding: '6px', fontSize: 11, color: match.draw ? COLORS.accent : COLORS.textDim,
-          background: 'transparent', border: 'none', borderTop: `1px solid ${COLORS.line}`, cursor: 'pointer',
-        }}>
-          {match.draw ? '✓ 平手' : '標記平手'}
-        </button>
-      ) : null}
+        editable={editable && !match.bye} score={match.score2} onScoreChange={(v) => onSetScore(match.id, 'score2', v)} />
     </div>
   );
 }
 
 function StandingsTable({ ranking }) {
+  const headCell = { fontSize: 10.5, color: COLORS.textDim, textAlign: 'center' };
+  const cell = { fontSize: 12.5, fontFamily: FONT_MONO, color: COLORS.textDim, textAlign: 'center' };
   return (
-    <div style={{ border: `1px solid ${COLORS.line}`, borderRadius: 8, overflow: 'hidden' }}>
-      <div style={{ display: 'flex', padding: '8px 12px', background: COLORS.panelAlt, fontSize: 11, color: COLORS.textDim }}>
-        <span style={{ width: 28 }}>#</span>
-        <span style={{ flex: 1 }}>選手</span>
-        <span style={{ width: 70, textAlign: 'right', fontFamily: FONT_MONO }}>勝-負-和</span>
+    <div style={{ border: `1px solid ${COLORS.line}`, borderRadius: 8, overflow: 'auto' }}>
+      <div style={{ display: 'flex', padding: '8px 8px', background: COLORS.panelAlt, gap: 4, minWidth: 340 }}>
+        <span style={{ ...headCell, width: 22, textAlign: 'left' }}>#</span>
+        <span style={{ ...headCell, flex: 1, textAlign: 'left' }}>選手</span>
+        <span style={{ ...headCell, width: 28 }}>勝</span>
+        <span style={{ ...headCell, width: 28 }}>負</span>
+        <span style={{ ...headCell, width: 28 }}>和</span>
+        <span style={{ ...headCell, width: 40 }}>勝分</span>
+        <span style={{ ...headCell, width: 40 }}>失分</span>
+        <span style={{ ...headCell, width: 40 }}>淨分</span>
       </div>
       {ranking.map((r) => (
-        <div key={r.player.id} style={{ display: 'flex', alignItems: 'center', padding: '10px 12px', borderTop: `1px solid ${COLORS.line}` }}>
-          <span style={{ width: 28, fontFamily: FONT_MONO, color: r.rank <= 3 ? COLORS.accent : COLORS.textDim, fontWeight: 600 }}>{r.rank}</span>
-          <span style={{ flex: 1, fontSize: 14 }}>{r.player.nickname || r.player.name}</span>
-          <span style={{ width: 70, textAlign: 'right', fontSize: 12, fontFamily: FONT_MONO, color: COLORS.textDim }}>
-            {r.w !== undefined ? `${r.w}-${r.l}-${r.d}` : '—'}
+        <div key={r.player.id} style={{ display: 'flex', alignItems: 'center', padding: '9px 8px', borderTop: `1px solid ${COLORS.line}`, gap: 4, minWidth: 340 }}>
+          <span style={{ width: 22, fontFamily: FONT_MONO, fontSize: 12.5, color: r.rank <= 3 ? COLORS.accent : COLORS.textDim, fontWeight: 600, textAlign: 'left' }}>{r.rank}</span>
+          <span style={{ flex: 1, fontSize: 13.5, textAlign: 'left', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.player.name}</span>
+          <span style={{ ...cell, width: 28 }}>{r.w !== undefined ? r.w : '—'}</span>
+          <span style={{ ...cell, width: 28 }}>{r.l !== undefined ? r.l : '—'}</span>
+          <span style={{ ...cell, width: 28 }}>{r.d !== undefined ? r.d : '—'}</span>
+          <span style={{ ...cell, width: 40 }}>{r.pf !== undefined ? r.pf : '—'}</span>
+          <span style={{ ...cell, width: 40 }}>{r.pa !== undefined ? r.pa : '—'}</span>
+          <span style={{ ...cell, width: 40, color: r.diff > 0 ? COLORS.win : r.diff < 0 ? COLORS.loss : COLORS.textDim }}>
+            {r.diff !== undefined ? (r.diff > 0 ? `+${r.diff}` : r.diff) : '—'}
           </span>
         </div>
       ))}
@@ -491,12 +489,12 @@ function StandingsTable({ ranking }) {
 }
 
 /* ============================== 賽程檢視 ============================== */
-function EliminationView({ stage, onSetWinner, onSetScore }) {
+function EliminationView({ stage, onSetScore }) {
   const baseHeight = stage.rounds[0].matches.length * 76;
   return (
     <div>
       <div style={{ fontSize: 11, color: COLORS.textFaint, marginBottom: 10 }}>
-        任何一輪的比分／獲勝方都可以隨時修改，修改後系統會自動重新計算後續輪次。
+        直接輸入雙方分數，系統會自動判定晉級者；任何一輪都可以隨時修改，後續輪次會自動重新計算。
       </div>
       <div style={{ display: 'flex', gap: 28, overflowX: 'auto', paddingBottom: 12 }}>
         {stage.rounds.map((round) => (
@@ -505,12 +503,20 @@ function EliminationView({ stage, onSetWinner, onSetScore }) {
               {round.label}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-around', height: baseHeight }}>
-              {round.matches.map((m) => (
-                <MatchCard key={m.id} match={m} editable
-                  onSetWinner={(matchId, winnerId) => onSetWinner(stage.id, round.id, matchId, winnerId)}
-                  onSetScore={(matchId, side, value) => onSetScore(stage.id, round.id, matchId, side, value)}
-                  onSetDraw={() => {}} showDraw={false} />
-              ))}
+              {round.matches.map((m) => {
+                const tie = !m.bye && m.score1 !== null && m.score2 !== null && m.score1 === m.score2;
+                return (
+                  <div key={m.id}>
+                    <MatchCard match={m} editable
+                      onSetScore={(matchId, side, value) => onSetScore(stage.id, round.id, matchId, side, value)} />
+                    {tie ? (
+                      <div style={{ fontSize: 10.5, color: COLORS.loss, marginTop: 4, textAlign: 'center' }}>
+                        分數相同，請修正比分以決定晉級者
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
             </div>
           </div>
         ))}
@@ -523,7 +529,7 @@ function EliminationView({ stage, onSetWinner, onSetScore }) {
             <div style={{ fontSize: 16, fontWeight: 600, color: COLORS.accent }}>
               {(() => {
                 const champ = stage.participants.find((p) => p.id === stage.championId);
-                return champ ? (champ.nickname || champ.name) : '';
+                return champ ? champ.name : '';
               })()}
             </div>
           </div>
@@ -533,14 +539,17 @@ function EliminationView({ stage, onSetWinner, onSetScore }) {
   );
 }
 
-function SwissView({ stage, onSetWinner, onSetDraw, onSetScore, onNextRound }) {
+function SwissView({ stage, onSetScore, onNextRound }) {
   const lastRound = stage.rounds[stage.rounds.length - 1];
   const roundComplete = lastRound.matches.every((m) => m.bye || m.winner || m.draw);
   const canAdvance = roundComplete && stage.rounds.length < stage.swissRounds && stage.status !== 'done';
   const allMatches = stage.rounds.reduce((acc, r) => acc.concat(r.matches), []);
-  const ranking = computeStandingsFromMatches(stage.participants, allMatches).map((s, idx) => ({ rank: idx + 1, player: s.player, w: s.w, l: s.l, d: s.d }));
+  const ranking = computeStandingsFromMatches(stage.participants, allMatches, { byeCountsAsWin: true }).map((s, idx) => ({ rank: idx + 1, ...s }));
   return (
     <div>
+      <div style={{ fontSize: 11, color: COLORS.textFaint, marginBottom: 10 }}>
+        直接輸入雙方分數，分數相同會自動記為平手；若因人數為奇數而輪空，該輪直接記一勝。
+      </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 10 }}>
         <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 700, fontSize: 14, color: COLORS.textDim }}>
           {lastRound.label}（共 {stage.swissRounds} 輪）
@@ -549,10 +558,8 @@ function SwissView({ stage, onSetWinner, onSetDraw, onSetScore, onNextRound }) {
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 24 }}>
         {lastRound.matches.map((m) => (
-          <MatchCard key={m.id} match={m} editable={stage.status !== 'done'} fullWidth showDraw
-            onSetWinner={(matchId, winnerId) => onSetWinner(stage.id, lastRound.id, matchId, winnerId)}
-            onSetScore={(matchId, side, value) => onSetScore(stage.id, lastRound.id, matchId, side, value)}
-            onSetDraw={(matchId) => onSetDraw(stage.id, lastRound.id, matchId)} />
+          <MatchCard key={m.id} match={m} editable={stage.status !== 'done'} fullWidth
+            onSetScore={(matchId, side, value) => onSetScore(stage.id, lastRound.id, matchId, side, value)} />
         ))}
       </div>
       <div style={{ fontSize: 12, color: COLORS.textDim, marginBottom: 8 }}>排名</div>
@@ -561,12 +568,15 @@ function SwissView({ stage, onSetWinner, onSetDraw, onSetScore, onNextRound }) {
   );
 }
 
-function RoundRobinView({ stage, onSetWinner, onSetDraw, onSetScore }) {
+function RoundRobinView({ stage, onSetScore }) {
   const allMatches = stage.rounds.reduce((acc, r) => acc.concat(r.matches), []);
-  const ranking = computeStandingsFromMatches(stage.participants, allMatches).map((s, idx) => ({ rank: idx + 1, player: s.player, w: s.w, l: s.l, d: s.d }));
+  const ranking = computeStandingsFromMatches(stage.participants, allMatches).map((s, idx) => ({ rank: idx + 1, ...s }));
   return (
     <div>
-      <div style={{ fontSize: 12, color: COLORS.textDim, marginBottom: 10 }}>排名</div>
+      <div style={{ fontSize: 11, color: COLORS.textFaint, marginBottom: 10 }}>
+        直接輸入雙方分數，分數相同會自動記為平手；輪空不計入任何人的勝負和。
+      </div>
+      <div style={{ fontSize: 12, color: COLORS.textDim, marginBottom: 10 }}>總成績</div>
       <div style={{ marginBottom: 24 }}><StandingsTable ranking={ranking} /></div>
       <div style={{ fontSize: 12, color: COLORS.textDim, marginBottom: 10 }}>賽程</div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -575,10 +585,8 @@ function RoundRobinView({ stage, onSetWinner, onSetDraw, onSetScore }) {
             <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 700, fontSize: 13, color: COLORS.textDim, marginBottom: 8 }}>{round.label}</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {round.matches.map((m) => (
-                <MatchCard key={m.id} match={m} editable fullWidth showDraw
-                  onSetWinner={(matchId, winnerId) => onSetWinner(stage.id, round.id, matchId, winnerId)}
-                  onSetScore={(matchId, side, value) => onSetScore(stage.id, round.id, matchId, side, value)}
-                  onSetDraw={(matchId) => onSetDraw(stage.id, round.id, matchId)} />
+                <MatchCard key={m.id} match={m} editable fullWidth
+                  onSetScore={(matchId, side, value) => onSetScore(stage.id, round.id, matchId, side, value)} />
               ))}
             </div>
           </div>
@@ -588,13 +596,15 @@ function RoundRobinView({ stage, onSetWinner, onSetDraw, onSetScore }) {
   );
 }
 
-function BracketTab({ stages, activeStageId, setActiveStageId, onSetWinner, onSetDraw, onSetScore, onNextSwissRound, onAdvanceFromStage }) {
+function BracketTab({ stages, activeStageId, setActiveStageId, onSetScore, onNextSwissRound }) {
   const [exportOpen, setExportOpen] = useState(false);
   const [exportText, setExportText] = useState('');
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
+  const textareaRef = useRef(null);
 
   if (stages.length === 0) {
-    return <EmptyState text="尚未建立任何賽事階段" hint="請先到「賽制」頁籤建立第一個階段" />;
+    return <EmptyState text="尚未建立任何賽事" hint="請先到「賽制」頁籤建立第一場賽事" />;
   }
   const stage = stages.find((s) => s.id === activeStageId) || stages[stages.length - 1];
 
@@ -602,26 +612,53 @@ function BracketTab({ stages, activeStageId, setActiveStageId, onSetWinner, onSe
     setExportText(buildStageExportText(stage));
     setExportOpen(true);
     setCopied(false);
+    setCopyFailed(false);
   };
 
   const handleCopy = async () => {
+    let success = false;
+
+    // 方法一：現代瀏覽器的剪貼簿 API（部分沙盒環境會被權限擋下）
     try {
-      await navigator.clipboard.writeText(exportText);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(exportText);
+        success = true;
+      }
     } catch (e) {
+      success = false;
+    }
+
+    // 方法二：備援做法，直接對畫面上的文字框執行全選＋複製指令
+    if (!success && textareaRef.current) {
+      try {
+        textareaRef.current.focus();
+        textareaRef.current.select();
+        success = document.execCommand('copy');
+      } catch (e) {
+        success = false;
+      }
+    }
+
+    if (success) {
+      setCopied(true);
+      setCopyFailed(false);
+      setTimeout(() => setCopied(false), 2000);
+    } else {
       setCopied(false);
+      setCopyFailed(true);
+      if (textareaRef.current) {
+        textareaRef.current.focus();
+        textareaRef.current.select();
+      }
+      setTimeout(() => setCopyFailed(false), 4000);
     }
   };
 
   return (
     <div>
-      {stage.competitionName ? (
-        <div style={{ fontSize: 11, color: COLORS.accent, marginBottom: 6 }}>{stage.competitionName}</div>
-      ) : null}
       <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 12, marginBottom: 8 }}>
         {stages.map((s) => (
-          <button key={s.id} title={s.competitionName || ''} onClick={() => { setActiveStageId(s.id); setExportOpen(false); }} style={{
+          <button key={s.id} onClick={() => { setActiveStageId(s.id); setExportOpen(false); }} style={{
             flexShrink: 0, padding: '8px 14px', borderRadius: 20, fontSize: 13,
             border: `1px solid ${s.id === stage.id ? COLORS.accent : COLORS.line}`,
             background: s.id === stage.id ? 'rgba(217,166,62,0.12)' : 'transparent',
@@ -634,17 +671,15 @@ function BracketTab({ stages, activeStageId, setActiveStageId, onSetWinner, onSe
         ))}
       </div>
       {stage.format === 'single' ? (
-        <EliminationView stage={stage} onSetWinner={onSetWinner} onSetScore={onSetScore} />
+        <EliminationView stage={stage} onSetScore={onSetScore} />
       ) : stage.format === 'swiss' ? (
-        <SwissView stage={stage} onSetWinner={onSetWinner} onSetDraw={onSetDraw} onSetScore={onSetScore} onNextRound={onNextSwissRound} />
+        <SwissView stage={stage} onSetScore={onSetScore} onNextRound={onNextSwissRound} />
       ) : (
-        <RoundRobinView stage={stage} onSetWinner={onSetWinner} onSetDraw={onSetDraw} onSetScore={onSetScore} />
+        <RoundRobinView stage={stage} onSetScore={onSetScore} />
       )}
-      <div style={{ marginTop: 20, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+
+      <div style={{ marginTop: 20 }}>
         <Button variant="secondary" icon={Copy} onClick={handleShowExport}>顯示可複製的賽程結果文字</Button>
-        {stage.status === 'done' && stage.format !== 'single' ? (
-          <Button variant="secondary" icon={ChevronRight} onClick={() => onAdvanceFromStage(stage)}>以此排名建立下一階段</Button>
-        ) : null}
       </div>
 
       {exportOpen ? (
@@ -656,7 +691,13 @@ function BracketTab({ stages, activeStageId, setActiveStageId, onSetWinner, onSe
               <Button variant="secondary" onClick={() => setExportOpen(false)}>關閉</Button>
             </div>
           </div>
+          {copyFailed ? (
+            <div style={{ fontSize: 11.5, color: COLORS.loss, marginBottom: 8 }}>
+              自動複製被瀏覽器擋下了，已經幫你全選好文字，請直接按 Ctrl+C（Mac 請按 Cmd+C）手動複製。
+            </div>
+          ) : null}
           <textarea
+            ref={textareaRef}
             readOnly
             value={exportText}
             onClick={(e) => e.target.select()}
@@ -668,10 +709,6 @@ function BracketTab({ stages, activeStageId, setActiveStageId, onSetWinner, onSe
           />
         </div>
       ) : null}
-
-      {stage.status === 'done' && stage.format === 'single' ? (
-        <div style={{ marginTop: 12, fontSize: 12, color: COLORS.textDim }}>此階段已產生冠軍。如需繼續賽事，請至「賽制」建立下一階段。</div>
-      ) : null}
     </div>
   );
 }
@@ -679,25 +716,26 @@ function BracketTab({ stages, activeStageId, setActiveStageId, onSetWinner, onSe
 /* ============================== 選手頁籤 ============================== */
 function PlayersTab({ players, onAdd, onRemove, onUpdate, onShuffle }) {
   const [name, setName] = useState('');
-  const [nickname, setNickname] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [editName, setEditName] = useState('');
-  const [editNickname, setEditNickname] = useState('');
 
   const submit = () => {
     if (!name.trim()) return;
-    onAdd(name, nickname);
-    setName(''); setNickname('');
+    onAdd(name);
+    setName('');
   };
-  const startEdit = (p) => { setEditingId(p.id); setEditName(p.name); setEditNickname(p.nickname || ''); };
-  const saveEdit = () => { onUpdate(editingId, { name: editName.trim(), nickname: editNickname.trim() }); setEditingId(null); };
+  const startEdit = (p) => { setEditingId(p.id); setEditName(p.name); };
+  const saveEdit = () => {
+    if (!editName.trim()) return;
+    onUpdate(editingId, { name: editName.trim() });
+    setEditingId(null);
+  };
 
   return (
     <div>
       <div style={{ fontSize: 12, color: COLORS.textDim, marginBottom: 10 }}>新增選手</div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 20, border: `1px solid ${COLORS.line}`, borderRadius: 10, padding: 16 }}>
         <div><FieldLabel>姓名</FieldLabel><TextInput value={name} onChange={setName} placeholder="王小明" /></div>
-        <div><FieldLabel>識別名（顯示於賽程，選填）</FieldLabel><TextInput value={nickname} onChange={setNickname} placeholder="例如：隊長 / 選手代號" /></div>
         <Button variant="primary" icon={Plus} onClick={submit}>加入選手</Button>
       </div>
 
@@ -721,7 +759,6 @@ function PlayersTab({ players, onAdd, onRemove, onUpdate, onShuffle }) {
               {editingId === p.id ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   <TextInput value={editName} onChange={setEditName} placeholder="姓名" />
-                  <TextInput value={editNickname} onChange={setEditNickname} placeholder="識別名" />
                   <div style={{ display: 'flex', gap: 8 }}>
                     <Button variant="primary" onClick={saveEdit}>儲存</Button>
                     <Button variant="secondary" onClick={() => setEditingId(null)}>取消</Button>
@@ -731,10 +768,7 @@ function PlayersTab({ players, onAdd, onRemove, onUpdate, onShuffle }) {
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <div onClick={() => startEdit(p)} style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10 }}>
                     <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textFaint, width: 18, flexShrink: 0 }}>{idx + 1}</span>
-                    <div>
-                      <div style={{ fontSize: 14, fontWeight: 500 }}>{p.nickname || p.name}</div>
-                      {p.nickname ? <div style={{ fontSize: 11, color: COLORS.textFaint }}>{p.name}</div> : null}
-                    </div>
+                    <div style={{ fontSize: 14, fontWeight: 500 }}>{p.name}</div>
                   </div>
                   <button onClick={() => onRemove(p.id)} style={{ background: 'transparent', border: 'none', color: COLORS.textFaint, cursor: 'pointer' }}>
                     <Trash2 size={16} />
@@ -749,67 +783,39 @@ function PlayersTab({ players, onAdd, onRemove, onUpdate, onShuffle }) {
   );
 }
 
-/* ============================== 賽制頁籤 ============================== */
-function StagesTab({ players, stages, onCreateStage, onDeleteStage, prefillSourceStageId, clearPrefill }) {
+/* ============================== 賽制頁籤（每場賽事僅一個階段） ============================== */
+function StagesTab({ players, stages, onCreateStage, onDeleteStage }) {
   const [showForm, setShowForm] = useState(stages.length === 0);
   const [competitionName, setCompetitionName] = useState('');
-  const [name, setName] = useState('');
   const [format, setFormat] = useState('single');
   const [source, setSource] = useState('all');
   const [selectedIds, setSelectedIds] = useState([]);
-  const [sourceStageId, setSourceStageId] = useState('');
-  const [topN, setTopN] = useState(8);
   const [swissRounds, setSwissRounds] = useState(() => Math.max(3, Math.ceil(Math.log2(Math.max(players.length, 2)))));
   const [doubleRound, setDoubleRound] = useState(false);
   const [shuffle, setShuffle] = useState(false);
-
-  const doneStages = stages.filter((s) => s.status === 'done');
-
-  useEffect(() => {
-    if (prefillSourceStageId) {
-      setShowForm(true);
-      setSource('stage');
-      setSourceStageId(prefillSourceStageId);
-      clearPrefill();
-    }
-    // eslint-disable-next-line
-  }, [prefillSourceStageId]);
 
   const toggleSelect = (id) => {
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   };
 
   const handleSubmit = () => {
-    let participantIds = [];
-    if (source === 'all') participantIds = players.map((p) => p.id);
-    else if (source === 'manual') participantIds = selectedIds;
-    else if (source === 'stage') {
-      const srcStage = stages.find((s) => s.id === sourceStageId);
-      if (srcStage) {
-        const ranking = getStageRanking(srcStage);
-        participantIds = ranking.slice(0, Number(topN)).map((r) => r.player.id);
-      }
-    }
+    let participantIds = source === 'all' ? players.map((p) => p.id) : selectedIds;
     if (shuffle) participantIds = shuffleArray(participantIds);
     if (participantIds.length < 2) return;
-    onCreateStage({ name, competitionName, format, participantIds, swissRounds: Number(swissRounds), doubleRound });
-    setName(''); setSelectedIds([]); setShowForm(false);
+    onCreateStage({ competitionName, format, participantIds, swissRounds: Number(swissRounds), doubleRound });
+    setCompetitionName(''); setSelectedIds([]); setShowForm(false);
   };
-
-  const srcStageObj = stages.find((s) => s.id === sourceStageId);
-  const srcMax = srcStageObj ? srcStageObj.participants.length : 64;
 
   return (
     <div>
-      <div style={{ fontSize: 12, color: COLORS.textDim, marginBottom: 10 }}>賽事階段</div>
+      <div style={{ fontSize: 12, color: COLORS.textDim, marginBottom: 10 }}>賽事列表</div>
       {stages.length === 0 ? (
-        <EmptyState text="尚未建立任何階段" hint="設定賽制並選擇參賽者以產生賽程" />
+        <EmptyState text="尚未建立任何賽事" hint="設定賽制並選擇參賽者以產生賽程" />
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 20 }}>
           {stages.map((s) => (
             <div key={s.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', border: `1px solid ${COLORS.line}`, borderRadius: 8 }}>
               <div>
-                {s.competitionName ? <div style={{ fontSize: 11, color: COLORS.accent, marginBottom: 2 }}>{s.competitionName}</div> : null}
                 <div style={{ fontSize: 14, fontWeight: 500 }}>{s.name}</div>
                 <div style={{ fontSize: 11, color: COLORS.textDim }}>{s.participants.length} 位選手・{s.status === 'done' ? '已完成' : '進行中'}</div>
               </div>
@@ -822,16 +828,12 @@ function StagesTab({ players, stages, onCreateStage, onDeleteStage, prefillSourc
       )}
 
       {!showForm ? (
-        <Button variant="primary" icon={Plus} onClick={() => setShowForm(true)}>新增賽事階段</Button>
+        <Button variant="primary" icon={Plus} onClick={() => setShowForm(true)}>新增賽事</Button>
       ) : (
         <div style={{ border: `1px solid ${COLORS.line}`, borderRadius: 10, padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div>
             <FieldLabel>比賽名稱（選填，用於區別不同賽事的資料）</FieldLabel>
-            <TextInput value={competitionName} onChange={setCompetitionName} placeholder="例如：2026 校慶排球賽" />
-          </div>
-          <div>
-            <FieldLabel>階段名稱（選填）</FieldLabel>
-            <TextInput value={name} onChange={setName} placeholder={defaultStageName(format, players.length)} />
+            <TextInput value={competitionName} onChange={setCompetitionName} placeholder={defaultStageName(format, players.length)} />
           </div>
           <div>
             <FieldLabel>賽制</FieldLabel>
@@ -862,9 +864,6 @@ function StagesTab({ players, stages, onCreateStage, onDeleteStage, prefillSourc
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               <RadioRow checked={source === 'all'} onClick={() => setSource('all')} label={`所有選手（${players.length} 人）`} />
               <RadioRow checked={source === 'manual'} onClick={() => setSource('manual')} label="手動選擇選手" />
-              {doneStages.length > 0 ? (
-                <RadioRow checked={source === 'stage'} onClick={() => setSource('stage')} label="從已完成的階段晉級" />
-              ) : null}
             </div>
           </div>
 
@@ -873,19 +872,9 @@ function StagesTab({ players, stages, onCreateStage, onDeleteStage, prefillSourc
               {players.map((p) => (
                 <label key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, padding: '4px', cursor: 'pointer' }}>
                   <input type="checkbox" checked={selectedIds.includes(p.id)} onChange={() => toggleSelect(p.id)} />
-                  {p.nickname || p.name}
+                  {p.name}
                 </label>
               ))}
-            </div>
-          ) : null}
-
-          {source === 'stage' ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <select value={sourceStageId} onChange={(e) => setSourceStageId(e.target.value)} style={inputBase}>
-                <option value="">選擇階段</option>
-                {doneStages.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-              </select>
-              <div><FieldLabel>晉級人數</FieldLabel><NumberInput value={topN} onChange={setTopN} min={2} max={srcMax} /></div>
             </div>
           ) : null}
 
@@ -912,7 +901,6 @@ export default function App() {
   const [activeStageId, setActiveStageId] = useState(null);
   const [tournamentName, setTournamentName] = useState('我的錦標賽');
   const [loaded, setLoaded] = useState(false);
-  const [prefillSourceStageId, setPrefillSourceStageId] = useState(null);
 
   useEffect(() => {
     try { const r = localStore.get('tj_players_v1'); if (r) setPlayers(JSON.parse(r.value)); } catch (e) {}
@@ -932,12 +920,12 @@ export default function App() {
   useEffect(() => { if (loaded) localStore.set('tj_stages_v1', JSON.stringify(stages)); }, [stages, loaded]);
   useEffect(() => { if (loaded) localStore.set('tj_meta_v1', JSON.stringify({ activeStageId, tournamentName })); }, [activeStageId, tournamentName, loaded]);
 
-  const addPlayer = (name, nickname) => setPlayers((prev) => [...prev, { id: genId('p'), name: name.trim(), nickname: nickname.trim() }]);
+  const addPlayer = (name) => setPlayers((prev) => [...prev, { id: genId('p'), name: name.trim() }]);
   const removePlayer = (id) => setPlayers((prev) => prev.filter((p) => p.id !== id));
   const updatePlayer = (id, patch) => setPlayers((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
   const shufflePlayers = () => setPlayers((prev) => shuffleArray(prev));
 
-  const createStage = ({ name, competitionName, format, participantIds, swissRounds, doubleRound }) => {
+  const createStage = ({ competitionName, format, participantIds, swissRounds, doubleRound }) => {
     const participants = participantIds.map((id) => players.find((p) => p.id === id)).filter(Boolean);
     if (participants.length < 2) return;
     let rounds = [];
@@ -949,10 +937,10 @@ export default function App() {
     } else {
       rounds = [{ id: genId('r'), label: '第 1 輪', matches: generateSwissRound(participants, []) }];
     }
+    const trimmedName = competitionName && competitionName.trim() ? competitionName.trim() : '';
     const stage = {
       id: genId('s'),
-      competitionName: competitionName && competitionName.trim() ? competitionName.trim() : '',
-      name: name && name.trim() ? name.trim() : defaultStageName(format, participants.length),
+      name: trimmedName || defaultStageName(format, participants.length),
       format, participants, rounds,
       swissRounds: format === 'swiss' ? swissRounds : null,
       doubleRound: format === 'roundrobin' ? doubleRound : false,
@@ -966,27 +954,6 @@ export default function App() {
   const deleteStage = (id) => {
     setStages((prev) => prev.filter((s) => s.id !== id));
     setActiveStageId((prev) => (prev === id ? null : prev));
-  };
-
-  const handleSetWinner = (stageId, roundId, matchId, winnerId) => {
-    setStages((prev) => prev.map((stage) => {
-      if (stage.id !== stageId) return stage;
-      let rounds = stage.rounds.map((r) => (r.id !== roundId ? r : { ...r, matches: r.matches.map((m) => (m.id === matchId ? { ...m, winner: winnerId, draw: false } : m)) }));
-      if (stage.format === 'single') {
-        rounds = rebuildEliminationRounds(rounds, roundId);
-      }
-      const { status, championId } = withCompletionCheck(stage, rounds);
-      return { ...stage, rounds, status, championId };
-    }));
-  };
-
-  const handleSetDraw = (stageId, roundId, matchId) => {
-    setStages((prev) => prev.map((stage) => {
-      if (stage.id !== stageId) return stage;
-      const rounds = stage.rounds.map((r) => (r.id !== roundId ? r : { ...r, matches: r.matches.map((m) => (m.id === matchId ? { ...m, draw: !m.draw, winner: null } : m)) }));
-      const { status, championId } = withCompletionCheck(stage, rounds);
-      return { ...stage, rounds, status, championId };
-    }));
   };
 
   const handleSetScore = (stageId, roundId, matchId, side, rawValue) => {
@@ -1006,6 +973,9 @@ export default function App() {
               if (s1 > s2) { next.winner = next.p1.id; next.draw = false; }
               else if (s2 > s1) { next.winner = next.p2.id; next.draw = false; }
               else if (stage.format !== 'single') { next.winner = null; next.draw = true; }
+              else { next.winner = null; next.draw = false; }
+            } else {
+              next.winner = null; next.draw = false;
             }
             return next;
           }),
@@ -1028,11 +998,6 @@ export default function App() {
       const rounds = [...stage.rounds, { id: genId('r'), label: `第 ${roundNum + 1} 輪`, matches: newMatches }];
       return { ...stage, rounds };
     }));
-  };
-
-  const handleAdvanceFromStage = (stage) => {
-    setPrefillSourceStageId(stage.id);
-    setActiveTab('format');
   };
 
   const handleResetAll = () => {
@@ -1062,7 +1027,7 @@ export default function App() {
             </button>
           </div>
           <div style={{ fontSize: 12, color: COLORS.textFaint, marginTop: 4 }}>
-            {players.length} 位選手・{stages.length} 個賽事階段
+            {players.length} 位選手・{stages.length} 場賽事
           </div>
         </div>
 
@@ -1070,12 +1035,10 @@ export default function App() {
           {activeTab === 'players' ? (
             <PlayersTab players={players} onAdd={addPlayer} onRemove={removePlayer} onUpdate={updatePlayer} onShuffle={shufflePlayers} />
           ) : activeTab === 'format' ? (
-            <StagesTab players={players} stages={stages} onCreateStage={createStage} onDeleteStage={deleteStage}
-              prefillSourceStageId={prefillSourceStageId} clearPrefill={() => setPrefillSourceStageId(null)} />
+            <StagesTab players={players} stages={stages} onCreateStage={createStage} onDeleteStage={deleteStage} />
           ) : (
             <BracketTab stages={stages} activeStageId={activeStageId} setActiveStageId={setActiveStageId}
-              onSetWinner={handleSetWinner} onSetDraw={handleSetDraw} onSetScore={handleSetScore}
-              onNextSwissRound={handleNextSwissRound} onAdvanceFromStage={handleAdvanceFromStage} />
+              onSetScore={handleSetScore} onNextSwissRound={handleNextSwissRound} />
           )}
         </div>
 
